@@ -9,6 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <style>
   :root{
     --bg:#0d0f18;
@@ -415,51 +416,57 @@ let progress = loadProgress() || {
 };
 
 /* ============================================================
-   Leaderboard (persisted in localStorage, shared list of runs)
+   Leaderboard — real-time, shared across every player via Supabase
    ============================================================ */
-const LEADERBOARD_KEY = 'seismicMazeLeaderboard';
-const CEPODR_RECORD = { username:'cepodr', time:227, moves:171, date:Date.now() }; // "professional" reference run
+const SUPABASE_URL = 'https://pneqaiystudexcbskcwo.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_KFVI_IEMkh6IxZx3QAQUog_he7jrxAx';
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-function loadLeaderboard(){
+const CEPODR_RECORD = { username:'cepodr', time_secs:227, moves:171 }; // "professional" reference run, always #1
+
+// Makes sure the reserved cepodr row exists in the shared table.
+// Safe to call every load — does nothing if it's already there.
+async function seedLeaderboard(){
   try{
-    const raw = localStorage.getItem(LEADERBOARD_KEY);
-    const list = raw ? JSON.parse(raw) : [];
-    return Array.isArray(list) ? list : [];
-  }catch(e){ return []; }
-}
-function saveLeaderboard(list){ localStorage.setItem(LEADERBOARD_KEY, JSON.stringify(list)); }
-
-function seedLeaderboard(){
-  const list = loadLeaderboard();
-  if(!list.some(e=> e.username.toLowerCase()==='cepodr')){
-    list.push({ ...CEPODR_RECORD });
-    saveLeaderboard(list);
-  }
+    const { data } = await supabaseClient
+      .from('leaderboard').select('id').ilike('username','cepodr').maybeSingle();
+    if(!data){
+      await supabaseClient.from('leaderboard').insert({
+        username: CEPODR_RECORD.username, time_secs: CEPODR_RECORD.time_secs, moves: CEPODR_RECORD.moves,
+      });
+    }
+  }catch(e){ console.error('leaderboard seed failed', e); }
 }
 
-// Adds/updates a player's best (fastest) completed run. Every player who
-// finishes all 9 levels gets an entry; only their personal best is kept.
-function addLeaderboardEntry(username, totalTime, totalMoves){
-  if(!username || username.toLowerCase()==='cepodr') return; // reserved record, never overwritten
-  const list = loadLeaderboard();
-  const idx = list.findIndex(e=> e.username.toLowerCase()===username.toLowerCase());
-  const entry = { username, time:totalTime, moves:totalMoves, date:Date.now() };
-  if(idx===-1){
-    list.push(entry);
-  } else if(totalTime < list[idx].time || (totalTime===list[idx].time && totalMoves < list[idx].moves)){
-    list[idx] = entry;
-  }
-  saveLeaderboard(list);
+// Adds/updates a player's best (fastest) completed run in the shared table.
+// Every player who finishes all 9 levels gets an entry; only their personal
+// best is kept. The reserved "cepodr" row is never touched by real players.
+async function addLeaderboardEntry(username, totalTime, totalMoves){
+  if(!username || username.toLowerCase()==='cepodr') return;
+  try{
+    const { data: existing, error: selErr } = await supabaseClient
+      .from('leaderboard').select('id,time_secs,moves').ilike('username', username).maybeSingle();
+    if(selErr) throw selErr;
+    if(!existing){
+      await supabaseClient.from('leaderboard').insert({ username, time_secs: totalTime, moves: totalMoves });
+    } else if(totalTime < existing.time_secs || (totalTime===existing.time_secs && totalMoves < existing.moves)){
+      await supabaseClient.from('leaderboard').update({ time_secs: totalTime, moves: totalMoves }).eq('id', existing.id);
+    }
+  }catch(e){ console.error('leaderboard submit failed', e); }
 }
 
-// cepodr is always pinned at rank #1; every other player is ranked below,
-// sorted by fastest total time, then fewest total moves.
-function getRankedLeaderboard(){
-  const list = loadLeaderboard();
+// Fetches every run from Supabase, live. cepodr is always pinned at rank #1;
+// every other player is ranked below, sorted by fastest total time, then
+// fewest total moves.
+async function getRankedLeaderboard(){
+  const { data, error } = await supabaseClient
+    .from('leaderboard').select('username,time_secs,moves')
+    .order('time_secs', { ascending:true }).order('moves', { ascending:true });
+  if(error){ console.error('leaderboard fetch failed', error); return [{ ...CEPODR_RECORD }]; }
+  const list = data || [];
   const cepodrIdx = list.findIndex(e=> e.username.toLowerCase()==='cepodr');
   const cepodrEntry = cepodrIdx>=0 ? list.splice(cepodrIdx,1)[0] : { ...CEPODR_RECORD };
-  const rest = list.slice().sort((a,b)=> a.time-b.time || a.moves-b.moves);
-  return [cepodrEntry, ...rest];
+  return [cepodrEntry, ...list];
 }
 
 function formatLbTime(secs){
@@ -468,9 +475,10 @@ function formatLbTime(secs){
   return `${m}:${s}`;
 }
 
-function renderLeaderboard(){
-  const ranked = getRankedLeaderboard();
+async function renderLeaderboard(){
   const rowsEl = document.getElementById('lbRows');
+  rowsEl.innerHTML = `<div class="lb-empty">Loading leaderboard…</div>`;
+  const ranked = await getRankedLeaderboard();
   if(ranked.length===0){
     rowsEl.innerHTML = `<div class="lb-empty">No runs yet — be the first to finish all 9 magnitudes!</div>`;
     return;
@@ -484,7 +492,7 @@ function renderLeaderboard(){
       <div class="${cls}">
         <div class="lb-rank">${medal}</div>
         <div class="lb-name"><span>@${e.username}</span>${isMe ? '<span class="lb-you-tag">YOU</span>' : ''}</div>
-        <div class="lb-time">${formatLbTime(e.time)}</div>
+        <div class="lb-time">${formatLbTime(e.time_secs)}</div>
         <div class="lb-moves">${e.moves}</div>
       </div>`;
   }).join('');
