@@ -483,8 +483,6 @@ const SUPABASE_URL = 'https://pneqaiystudexcbskcwo.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_KFVI_IEMkh6IxZx3QAQUog_he7jrxAx';
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const CEPODR_RECORD = { username:'cepodr', time_secs:227, moves:171 }; // "professional" reference run, always #1
-
 // NOTE: cepodr auto-seed disabled per user request — leaderboard is now fully reset/clean.
 async function seedLeaderboard(){
   // no-op: reserved cepodr row is no longer auto-created
@@ -492,10 +490,9 @@ async function seedLeaderboard(){
 }
 
 // Adds/updates a player's best (fastest) completed run in the shared table.
-// Every player who finishes all 9 levels gets an entry; only their personal
-// best is kept. The reserved "cepodr" row is never touched by real players.
+// Every player who finishes all 9 levels gets an entry, including "cepodr".
 async function addLeaderboardEntry(username, totalTime, totalMoves){
-  if(!username || username.toLowerCase()==='cepodr') return;
+  if(!username) return;
   try{
     const { data: existing, error: selErr } = await supabaseClient
       .from('leaderboard').select('id,time_secs,moves').ilike('username', username).maybeSingle();
@@ -508,18 +505,14 @@ async function addLeaderboardEntry(username, totalTime, totalMoves){
   }catch(e){ console.error('leaderboard submit failed', e); }
 }
 
-// Fetches every run from Supabase, live. cepodr is always pinned at rank #1;
-// every other player is ranked below, sorted by fastest total time, then
-// fewest total moves.
+// Fetches every run from Supabase, live, sorted by fastest total time, then
+// fewest total moves. No forced/fake entries — ranking reflects real data only.
 async function getRankedLeaderboard(){
   const { data, error } = await supabaseClient
     .from('leaderboard').select('username,time_secs,moves')
     .order('time_secs', { ascending:true }).order('moves', { ascending:true });
-  if(error){ console.error('leaderboard fetch failed', error); return [{ ...CEPODR_RECORD }]; }
-  const list = data || [];
-  const cepodrIdx = list.findIndex(e=> e.username.toLowerCase()==='cepodr');
-  const cepodrEntry = cepodrIdx>=0 ? list.splice(cepodrIdx,1)[0] : { ...CEPODR_RECORD };
-  return [cepodrEntry, ...list];
+  if(error){ console.error('leaderboard fetch failed', error); return []; }
+  return data || [];
 }
 
 function formatLbTime(secs){
