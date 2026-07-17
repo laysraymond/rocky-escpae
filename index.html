@@ -363,9 +363,9 @@
     <div class="menu-topbar">
       <span class="who">Playing as <b class="mono" id="whoUsername">@user</b></span>
       <div style="display:flex; gap:16px; align-items:center;">
-        <button class="link-btn" id="btnShowLeaderboard">🏆 Leaderboard</button>
+        <button class="link-btn" id="btnShowLeaderboard">Leaderboard</button>
         <button class="link-btn" id="btnResetProgress">Reset progress</button>
-        <button class="link-btn" id="btnLogout">🔄 Ganti nama / Logout</button>
+        <button class="link-btn" id="btnLogout">Log Out</button>
       </div>
     </div>
     <div class="grid" id="levelGrid"></div>
@@ -569,9 +569,38 @@ document.getElementById('btnLbBack').addEventListener('click', ()=>{
   document.getElementById('screenMenu').style.display='block';
 });
 
+// Checks if a username is currently claimed by an active (not-logged-out)
+// session, ignoring the case where it's this exact browser's own session.
+async function isUsernameTaken(username){
+  try{
+    const { data, error } = await supabaseClient
+      .from('active_sessions').select('username').ilike('username', username).maybeSingle();
+    if(error) throw error;
+    return !!data;
+  }catch(e){ console.error('active_sessions check failed', e); return false; }
+}
+
+// Claims a username as "in use" so no one else can sign in with it until
+// this browser logs out. Safe to call again for the same username (no-op
+// if the row already exists, e.g. on page refresh for a returning player).
+async function claimUsername(username){
+  try{
+    await supabaseClient.from('active_sessions').insert({ username });
+  }catch(e){ /* already claimed by this same session — ignore */ }
+}
+
+// Releases a username so it becomes available again for anyone to use.
+async function releaseUsername(username){
+  if(!username) return;
+  try{
+    await supabaseClient.from('active_sessions').delete().ilike('username', username);
+  }catch(e){ console.error('active_sessions release failed', e); }
+}
+
 function initApp(){
   seedLeaderboard();
   if(progress.username){
+    claimUsername(progress.username);
     showMenu();
   } else {
     document.getElementById('screenGate').style.display='block';
@@ -581,17 +610,26 @@ function initApp(){
 
 document.getElementById('btnGateStart').addEventListener('click', submitGate);
 document.getElementById('gateInput').addEventListener('keydown', e=>{ if(e.key==='Enter') submitGate(); });
-function submitGate(){
+async function submitGate(){
   const input = document.getElementById('gateInput');
   let val = input.value.trim().replace(/^@/,'');
   const err = document.getElementById('gateError');
+  const btn = document.getElementById('btnGateStart');
   if(!val || !/^[A-Za-z0-9_]{1,15}$/.test(val)){
     err.textContent = 'Enter a valid X username (letters, numbers, underscore).';
     return;
   }
   err.textContent = '';
+  btn.disabled = true;
+  const taken = await isUsernameTaken(val);
+  btn.disabled = false;
+  if(taken){
+    err.textContent = 'This username is already in use on another device. Please choose another one, or log out from that device first.';
+    return;
+  }
   progress.username = val;
   saveProgress();
+  await claimUsername(val);
   showMenu();
 }
 
@@ -603,8 +641,9 @@ document.getElementById('btnResetProgress').addEventListener('click', ()=>{
   showMenu();
 });
 
-document.getElementById('btnLogout').addEventListener('click', ()=>{
-  if(!confirm('Logout and switch to a different username? Your local progress on this device will be cleared (your leaderboard score, if any, stays saved online).')) return;
+document.getElementById('btnLogout').addEventListener('click', async ()=>{
+  if(!confirm('Log out and switch to a different username? Your local progress on this device will be cleared (your leaderboard score, if any, stays saved online).')) return;
+  await releaseUsername(progress.username);
   localStorage.removeItem(STORAGE_KEY);
   progress = { username:null, unlockedLevel:1, completedLevels:[], totalTime:0, totalMoves:0, levelBests:{} };
   document.getElementById('gateInput').value = '';
