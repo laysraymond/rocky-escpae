@@ -365,6 +365,7 @@
       <div style="display:flex; gap:16px; align-items:center;">
         <button class="link-btn" id="btnShowLeaderboard">🏆 Leaderboard</button>
         <button class="link-btn" id="btnResetProgress">Reset progress</button>
+        <button class="link-btn" id="btnLogout">🔄 Ganti nama / Logout</button>
       </div>
     </div>
     <div class="grid" id="levelGrid"></div>
@@ -473,8 +474,22 @@ function loadProgress(){
 function saveProgress(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(progress)); }
 
 let progress = loadProgress() || {
-  username:null, unlockedLevel:1, completedLevels:[], totalTime:0, totalMoves:0,
+  username:null, unlockedLevel:1, completedLevels:[], totalTime:0, totalMoves:0, levelBests:{},
 };
+
+// Migration for saves created before per-level best-time tracking existed:
+// approximate a per-level baseline so the visible total doesn't jump or
+// get gamed by replaying just one level. Runs once; harmless if re-run.
+if(!progress.levelBests){
+  progress.levelBests = {};
+  const n = progress.completedLevels.length;
+  if(n > 0){
+    const avgTime = Math.round(progress.totalTime / n);
+    const avgMoves = Math.round(progress.totalMoves / n);
+    progress.completedLevels.forEach(id=>{ progress.levelBests[id] = { time: avgTime, moves: avgMoves }; });
+  }
+  saveProgress();
+}
 
 /* ============================================================
    Leaderboard — real-time, shared across every player via Supabase
@@ -574,10 +589,6 @@ function submitGate(){
     err.textContent = 'Enter a valid X username (letters, numbers, underscore).';
     return;
   }
-  if(val.toLowerCase()==='cepodr'){
-    err.textContent = 'This username is reserved. Please choose another one.';
-    return;
-  }
   err.textContent = '';
   progress.username = val;
   saveProgress();
@@ -587,9 +598,19 @@ function submitGate(){
 document.getElementById('btnResetProgress').addEventListener('click', ()=>{
   if(!confirm('Reset all progress and start again from Magnitude 1.0?')) return;
   const uname = progress.username;
-  progress = { username:uname, unlockedLevel:1, completedLevels:[], totalTime:0, totalMoves:0 };
+  progress = { username:uname, unlockedLevel:1, completedLevels:[], totalTime:0, totalMoves:0, levelBests:{} };
   saveProgress();
   showMenu();
+});
+
+document.getElementById('btnLogout').addEventListener('click', ()=>{
+  if(!confirm('Logout and switch to a different username? Your local progress on this device will be cleared (your leaderboard score, if any, stays saved online).')) return;
+  localStorage.removeItem(STORAGE_KEY);
+  progress = { username:null, unlockedLevel:1, completedLevels:[], totalTime:0, totalMoves:0, levelBests:{} };
+  document.getElementById('gateInput').value = '';
+  document.getElementById('gateError').textContent = '';
+  document.getElementById('screenMenu').style.display='none';
+  document.getElementById('screenGate').style.display='block';
 });
 
 function showMenu(){
@@ -911,17 +932,28 @@ function onWin(){
   clearInterval(state.timerId);
   const lv = LEVELS[state.levelIdx];
   const elapsedSecs = Math.floor((Date.now()-state.startTime)/1000);
+  const moves = state.moves;
 
-  // persist progress
+  // Track this level's personal best (fastest time, then fewest moves).
+  // Replaying an already-completed level only ever helps the total —
+  // it can never make it worse, since we keep whichever run was better.
+  const prevBest = progress.levelBests[lv.id];
+  if(!prevBest || elapsedSecs < prevBest.time || (elapsedSecs === prevBest.time && moves < prevBest.moves)){
+    progress.levelBests[lv.id] = { time: elapsedSecs, moves: moves };
+  }
   if(!progress.completedLevels.includes(lv.id)) progress.completedLevels.push(lv.id);
   progress.unlockedLevel = Math.max(progress.unlockedLevel, lv.id+1);
-  progress.totalTime += elapsedSecs;
-  progress.totalMoves += state.moves;
+
+  // Recompute totals fresh from recorded bests every time — never an
+  // accumulating sum of every attempt, so replays can't inflate it.
+  const bests = Object.values(progress.levelBests);
+  progress.totalTime = bests.reduce((sum,b)=>sum+b.time, 0);
+  progress.totalMoves = bests.reduce((sum,b)=>sum+b.moves, 0);
   saveProgress();
 
-  const isLast = lv.id === LEVELS.length;
+  const allDone = progress.completedLevels.length === LEVELS.length;
 
-  if(isLast){
+  if(allDone){
     addLeaderboardEntry(progress.username, progress.totalTime, progress.totalMoves);
     buildAchievementCard();
     document.getElementById('achieveOverlay').style.display='flex';
