@@ -485,18 +485,10 @@ const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const CEPODR_RECORD = { username:'cepodr', time_secs:227, moves:171 }; // "professional" reference run, always #1
 
-// Makes sure the reserved cepodr row exists in the shared table.
-// Safe to call every load — does nothing if it's already there.
+// NOTE: cepodr auto-seed disabled per user request — leaderboard is now fully reset/clean.
 async function seedLeaderboard(){
-  try{
-    const { data } = await supabaseClient
-      .from('leaderboard').select('id').ilike('username','cepodr').maybeSingle();
-    if(!data){
-      await supabaseClient.from('leaderboard').insert({
-        username: CEPODR_RECORD.username, time_secs: CEPODR_RECORD.time_secs, moves: CEPODR_RECORD.moves,
-      });
-    }
-  }catch(e){ console.error('leaderboard seed failed', e); }
+  // no-op: reserved cepodr row is no longer auto-created
+  return;
 }
 
 // Adds/updates a player's best (fastest) completed run in the shared table.
